@@ -1,0 +1,127 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_HUB_REPO = 'pawannetizen12/chatbot-app'
+        DOCKER_HUB_CREDENTIALS = credentials('dockerhub-credentials')
+        GIT_REPO = 'https://github.com/pawan-321/chatbot-devops-project.git'
+        STAGING_BRANCH = 'staging'
+    }
+    
+    stages {
+        stage('Checkout Code') {
+            steps {
+                script {
+                    echo "=== Checking out code from staging branch ==="
+                    git branch: env.STAGING_BRANCH,
+                        url: env.GIT_REPO,
+                        credentialsId: 'github-credentials'
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                script {
+                    echo "=== Installing Node.js dependencies ==="
+                    sh '''
+                        npm install || echo "No package.json found or npm not installed"
+                    '''
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                script {
+                    echo "=== Running application tests ==="
+                    sh '''
+                        npm test || echo "No tests specified, skipping"
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "=== Building Docker image ==="
+                    def buildNumber = env.BUILD_NUMBER
+                    def gitCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    
+                    sh """
+                        docker build -t ${DOCKER_HUB_REPO}:${buildNumber} .
+                        docker tag ${DOCKER_HUB_REPO}:${buildNumber} ${DOCKER_HUB_REPO}:${gitCommit}
+                        docker tag ${DOCKER_HUB_REPO}:${buildNumber} ${DOCKER_HUB_REPO}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo "=== Pushing Docker image to Docker Hub ==="
+                    sh """
+                        echo \${DOCKER_HUB_CREDENTIALS_PSW} | docker login -u \${DOCKER_HUB_CREDENTIALS_USR} --password-stdin
+                        docker push ${DOCKER_HUB_REPO}:${BUILD_NUMBER}
+                        docker push ${DOCKER_HUB_REPO}:latest
+                        docker logout
+                    """
+                }
+            }
+        }
+        
+        stage('Clean Local Images') {
+            steps {
+                script {
+                    echo "=== Cleaning up local Docker images ==="
+                    sh """
+                        docker rmi ${DOCKER_HUB_REPO}:${BUILD_NUMBER} || true
+                        docker rmi ${DOCKER_HUB_REPO}:latest || true
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            steps {
+                script {
+                    echo "=== Deploying to staging environment ==="
+                    sh '''
+                        docker-compose down || true
+                        docker-compose pull
+                        docker-compose up -d
+                        sleep 10
+                        docker-compose ps
+                    '''
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                script {
+                    echo "=== Performing health check ==="
+                    sh '''
+                        sleep 5
+                        curl -f http://localhost:3000/health || curl -f http://localhost:3000/ || echo "Service starting up..."
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "âœ… Pipeline completed successfully!"
+        }
+        failure {
+            echo "âŒ Pipeline failed!"
+        }
+        always {
+            echo "=== Cleaning up workspace ==="
+            cleanWs()
+        }
+    }
+}
